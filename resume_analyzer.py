@@ -1,26 +1,27 @@
 import streamlit as st
-import requests
 import PyPDF2
-import re 
-from io import BytesIO
+import re
+import google.generativeai as genai
+import os
 
-# Define API Key and Endpoint
-API_KEY = "AIzaSyCYlw-tQRewBF18drILXRNGMLMlVgtqpIM"
-GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key={API_KEY}"  # Replace with the actual API URL
+# Configure the Gemini API key
+api_key = os.getenv("API_KEY")
+genai.configure(api_key=api_key)  # Replace with your actual key
 
 def extract_text_from_pdf(pdf_file):
     try:
         pdf_reader = PyPDF2.PdfReader(pdf_file)
         text = ""
         for page in pdf_reader.pages:
-            text += page.extract_text()
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text
         return text
     except Exception as e:
         return f"Error reading PDF: {e}"
 
 def analyze_resume_with_gemini(resume_text):
     try:
-        # Comprehensive prompt for detailed analysis
         prompt = f"""
         Act as an experienced HR manager reviewing a resume. Provide a comprehensive analysis including:
         1. Detailed strengths and areas for improvement
@@ -33,32 +34,50 @@ def analyze_resume_with_gemini(resume_text):
         Resume Text:
         {resume_text}
         """
-        
-        payload = {
-            "contents": [{
-                "parts": [{
-                    "text": prompt
-                }]
-            }]
-        }
-        
-        headers = {"Content-Type": "application/json"}
-        
-        response = requests.post(GEMINI_API_URL, headers=headers, json=payload)
-        
-        if response.status_code == 200:
-            # Extract the text from the response
-            analysis = response.json().get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', 'No analysis provided')
-            return analysis
-        else:
-            return f"Error: {response.status_code} - {response.text}"
+
+        model = genai.GenerativeModel("gemini-2.0-flash-lite")  # or use "gemini-1.5-pro-latest" if available
+        response = model.generate_content(prompt)
+        return response.text
+
     except Exception as e:
-        return f"Error: {e}"
+        return f"Error generating analysis: {e}"
+
+def parse_analysis_sections(analysis_text):
+    """Parse the analysis text into different sections."""
+    # Default empty sections
+    sections = {
+        "analysis": "",
+        "skill_gaps": "",
+        "career_dev": "",
+        "ats_score": "",
+        "skills": "",
+        "resources": ""
+    }
+    
+    # Simple parsing logic - this can be enhanced with more sophisticated regex patterns
+    if "Strengths" in analysis_text:
+        sections["analysis"] = analysis_text.split("Potential Skill Gaps")[0].strip()
+    
+    if "Potential Skill Gaps" in analysis_text:
+        sections["skill_gaps"] = analysis_text.split("Potential Skill Gaps")[1].split("Career Development")[0].strip()
+    
+    if "Career Development" in analysis_text:
+        sections["career_dev"] = analysis_text.split("Career Development")[1].split("ATS Score")[0].strip()
+    
+    if "ATS Score" in analysis_text:
+        sections["ats_score"] = analysis_text.split("ATS Score")[1].split("Recommended Skills")[0].strip()
+    
+    if "Recommended Skills" in analysis_text:
+        sections["skills"] = analysis_text.split("Recommended Skills")[1].split("YouTube Learning Resources")[0].strip()
+    
+    if "YouTube Learning Resources" in analysis_text:
+        sections["resources"] = analysis_text.split("YouTube Learning Resources")[1].strip()
+    
+    return sections
 
 # Streamlit App
 st.title("🔍 Resume Analyzer Pro")
 
-# Sidebar for additional information
 st.sidebar.header("📌 Quick Tips")
 st.sidebar.info("""
 - Ensure your resume is clean and well-formatted
@@ -67,52 +86,47 @@ st.sidebar.info("""
 - Tailor your resume to the job description
 """)
 
+# models = genai.list_models()
+# for model in models:
+#     print(model.name, "-", model.supported_generation_methods)
+
 uploaded_file = st.file_uploader("Upload Your Resume (PDF)", type=["pdf"])
 
 if uploaded_file is not None:
-    # Create columns for better layout
     col1, col2 = st.columns(2)
-    
+
     with col1:
         st.write("Processing your resume...")
         resume_text = extract_text_from_pdf(uploaded_file)
-    
+
     if "Error" in resume_text:
         st.error(resume_text)
     else:
         with col2:
             st.write("Extracted Resume Text:")
             st.text_area("Resume Content", resume_text, height=200)
-        
+
         st.write("🚀 Analyzing your resume...")
+        
         with st.spinner('Generating comprehensive analysis...'):
-            analysis_result = analyze_resume_with_gemini(resume_text)
-        
-        #parsing api response into different sections
-        skills_pattern = r"(?<=\*\*5\. Recommended Skills to Learn\*\*\n\n)(.*?)(?=\n\n\*\*6\.)"
-        skills_match = re.search(skills_pattern, analysis_result, re.DOTALL)
-        recommended_skills_section = skills_match.group(1).strip() if skills_match else ""
+            full_analysis = analyze_resume_with_gemini(resume_text)
+            parsed = parse_analysis_sections(full_analysis)
 
-        resources_pattern = r"(?<=\*\*6\. YouTube Learning Resources for Skill Enhancement\*\*\n\n)(.*)"
-        resources_match = re.search(resources_pattern, analysis_result, re.DOTALL)
-        resources_section = resources_match.group(1).strip() if resources_match else ""
-
-
-        # Formatting the analysis result
+        # Display in the correct tabs
         st.markdown("## 📊 Detailed Resume Analysis")
-        
-        # Create tabs for different analysis sections
         tab1, tab2, tab3 = st.tabs(["📈 Analysis", "🎓 Skill Recommendations", "🎥 Learning Resources"])
-        
+
         with tab1:
             st.markdown("### 🔍 Comprehensive Review")
-            st.markdown(analysis_result)
-        
+            st.markdown(f"**Strengths and Areas for Improvement**\n\n{parsed['analysis']}")
+            st.markdown(f"**Potential Skill Gaps**\n\n{parsed['skill_gaps']}")
+            st.markdown(f"**Career Development Recommendations**\n\n{parsed['career_dev']}")
+            st.markdown(f"**ATS Score Estimate**\n\n{parsed['ats_score']}")
+
         with tab2:
             st.markdown("### 🚀 Skills to Learn")
-            # You might want to parse the analysis_result to extract skills
-            st.markdown(recommended_skills_section)
-        
+            st.markdown(parsed["skills"])
+
         with tab3:
             st.markdown("### 📺 Recommended Learning Resources")
-            st.markdown(resources_section)
+            st.markdown(parsed["resources"])
